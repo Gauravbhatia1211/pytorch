@@ -57,7 +57,8 @@ class SomeClass:
         if os.path.exists(model_dir):
             return
         os.makedirs(model_dir)
-        url = f"https://s3.amazonaws.com/download.onnx/models/{model}.tar.gz"
+        #use the bucket claimed by you
+        #url = f"https://s3.amazonaws.com/download.onnx/models/{model}.tar.gz"
 
         # On Windows, NamedTemporaryFile cannot be opened for a
         # second time
@@ -142,7 +143,7 @@ def upload_models():
                 "s3",
                 "cp",
                 model + ".tar.gz",
-                f"s3://download.onnx/models/{model}.tar.gz",
+               # f"s3://download.onnx/models/{model}.tar.gz",
                 "--acl",
                 "public-read",
             ],
