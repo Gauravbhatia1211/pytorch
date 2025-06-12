@@ -1,10 +1,11 @@
 import torch
+from torch._inductor.runtime.benchmarking import benchmarker
 
 
 def create_blocked_tensor(B, M, N, blocksize, sparsity, dtype, device):
-    assert (
-        sparsity <= 1.0 and sparsity >= 0.0
-    ), "sparsity should be a value between 0 and 1"
+    assert sparsity <= 1.0 and sparsity >= 0.0, (
+        "sparsity should be a value between 0 and 1"
+    )
     assert M % blocksize[0] == 0
     assert N % blocksize[1] == 0
     shape = (B, M // blocksize[0], N // blocksize[1])[int(B == 0) :]
@@ -27,11 +28,7 @@ def create_blocked_tensor(B, M, N, blocksize, sparsity, dtype, device):
 
 
 def _test_worker(test_func):
-    import triton
-
-    ms, ms_min, ms_max = triton.testing.do_bench(
-        test_func, warmup=500, rep=100, fast_flush=False
-    )
+    ms, ms_min, ms_max = benchmarker.benchmark_gpu(test_func, warmup=500, rep=100)
 
     tflops = 2 * m * k * n * 1e-12 / (ms * 1e-3)
     return ms, tflops
@@ -109,6 +106,15 @@ def test_bsr_scatter_mm(x, y, **meta):
     return _test_worker(test_func)
 
 
+def test_linear(x, y, **meta):
+    import torch.nn.functional as F
+
+    def test_func(x=x, y=y.transpose(-2, -1)):
+        return F.linear(y, x)
+
+    return _test_worker(test_func)
+
+
 if __name__ == "__main__":
     import argparse
     import atexit
@@ -116,6 +122,7 @@ if __name__ == "__main__":
     import sys
 
     import triton
+
     from torch.testing import make_tensor
 
     torch.manual_seed(0)
@@ -282,7 +289,7 @@ if __name__ == "__main__":
         sys.stdout.flush()
 
     for m, k, n, bm, bk, sparsity in itertools.product(
-        m_list, n_list, k_list, bm_list, bk_list, sparsity_list
+        m_list, k_list, n_list, bm_list, bk_list, sparsity_list
     ):
         k = k or m
         n = n or m
@@ -357,7 +364,7 @@ if __name__ == "__main__":
                         num_stages=num_stages,
                         num_warps=num_warps,
                     ),
-                ).get(op, dict())
+                ).get(op, {})
 
                 meta_str = ";".join(
                     f"{k}={v}" for k, v in meta.items() if v is not None
@@ -367,13 +374,15 @@ if __name__ == "__main__":
                 for r in range(args.repeat):
                     try:
                         time_ms, performance_tflops = test_func(x, y, **meta)
-                    except triton.compiler.OutOfResources as msg:
+                    except triton.compiler.OutOfResources:
                         print(
                             f"op={op}[{meta_str}]({bsr_size},{k}x{n}) dtype={args.dtype} {sparsity=}(nnz={x._nnz()})"
                             f" blocksize={bm}x{bk} OutOfResources",
                             file=outfile,
                         )
                         continue
+                    except AssertionError:
+                        raise
                     except Exception as msg:
                         msg = str(msg).split("\n", 1)[0]
                         print(

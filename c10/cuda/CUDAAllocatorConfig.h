@@ -1,18 +1,17 @@
 #pragma once
 
-#include <c10/cuda/CUDACachingAllocator.h>
-#include <c10/cuda/CUDAException.h>
 #include <c10/cuda/CUDAMacros.h>
 #include <c10/util/Exception.h>
-#include <c10/util/llvmMathExtras.h>
-#include <cuda_runtime_api.h>
+#include <c10/util/env.h>
 
 #include <atomic>
+#include <cstddef>
+#include <cstdlib>
+#include <mutex>
+#include <string>
 #include <vector>
 
-namespace c10 {
-namespace cuda {
-namespace CUDACachingAllocator {
+namespace c10::cuda::CUDACachingAllocator {
 
 // Environment config parser
 class C10_CUDA_API CUDAAllocatorConfig {
@@ -48,6 +47,10 @@ class C10_CUDA_API CUDAAllocatorConfig {
     return instance().m_pinned_num_register_threads;
   }
 
+  static bool pinned_use_background_threads() {
+    return instance().m_pinned_use_background_threads;
+  }
+
   static size_t pinned_max_register_threads() {
     // Based on the benchmark results, we see better allocation performance
     // with 8 threads. However on future systems, we may need more threads
@@ -61,27 +64,50 @@ class C10_CUDA_API CUDAAllocatorConfig {
   // using env variable: PYTORCH_CUDA_ALLOC_CONF=roundup_power2_divisions:4
   static size_t roundup_power2_divisions(size_t size);
 
+  static std::vector<size_t> roundup_power2_divisions() {
+    return instance().m_roundup_power2_divisions;
+  }
+
+  static size_t max_non_split_rounding_size() {
+    return instance().m_max_non_split_rounding_size;
+  }
+
+  static std::string last_allocator_settings() {
+    std::lock_guard<std::mutex> lock(
+        instance().m_last_allocator_settings_mutex);
+    return instance().m_last_allocator_settings;
+  }
+
   static CUDAAllocatorConfig& instance() {
     static CUDAAllocatorConfig* s_instance = ([]() {
       auto inst = new CUDAAllocatorConfig();
-      const char* env = getenv("PYTORCH_CUDA_ALLOC_CONF");
+      auto env = c10::utils::get_env("PYTORCH_CUDA_ALLOC_CONF");
+#ifdef USE_ROCM
+      // convenience for ROCm users, allow alternative HIP token
+      if (!env.has_value()) {
+        env = c10::utils::get_env("PYTORCH_HIP_ALLOC_CONF");
+      }
+#endif
       inst->parseArgs(env);
       return inst;
     })();
     return *s_instance;
   }
 
-  void parseArgs(const char* env);
+  void parseArgs(const std::optional<std::string>& env);
 
  private:
   CUDAAllocatorConfig();
 
-  void lexArgs(const char* env, std::vector<std::string>& config);
-  void consumeToken(
+  static void lexArgs(const std::string& env, std::vector<std::string>& config);
+  static void consumeToken(
       const std::vector<std::string>& config,
       size_t i,
       const char c);
   size_t parseMaxSplitSize(const std::vector<std::string>& config, size_t i);
+  size_t parseMaxNonSplitRoundingSize(
+      const std::vector<std::string>& config,
+      size_t i);
   size_t parseGarbageCollectionThreshold(
       const std::vector<std::string>& config,
       size_t i);
@@ -98,19 +124,24 @@ class C10_CUDA_API CUDAAllocatorConfig {
   size_t parsePinnedNumRegisterThreads(
       const std::vector<std::string>& config,
       size_t i);
+  size_t parsePinnedUseBackgroundThreads(
+      const std::vector<std::string>& config,
+      size_t i);
 
   std::atomic<size_t> m_max_split_size;
+  std::atomic<size_t> m_max_non_split_rounding_size;
   std::vector<size_t> m_roundup_power2_divisions;
   std::atomic<double> m_garbage_collection_threshold;
   std::atomic<size_t> m_pinned_num_register_threads;
   std::atomic<bool> m_expandable_segments;
   std::atomic<bool> m_release_lock_on_cudamalloc;
   std::atomic<bool> m_pinned_use_cuda_host_register;
+  std::atomic<bool> m_pinned_use_background_threads;
+  std::string m_last_allocator_settings;
+  std::mutex m_last_allocator_settings_mutex;
 };
 
 // General caching allocator utilities
 C10_CUDA_API void setAllocatorSettings(const std::string& env);
 
-} // namespace CUDACachingAllocator
-} // namespace cuda
-} // namespace c10
+} // namespace c10::cuda::CUDACachingAllocator

@@ -18,6 +18,7 @@ Tensors
     set_default_dtype
     get_default_dtype
     set_default_device
+    get_default_device
     set_default_tensor_type
     numel
     set_printoptions
@@ -55,6 +56,7 @@ Creation Ops
     asarray
     as_tensor
     as_strided
+    from_file
     from_numpy
     from_dlpack
     frombuffer
@@ -137,6 +139,39 @@ Indexing, Slicing, Joining, Mutating Ops
     vsplit
     vstack
     where
+
+.. _accelerators:
+
+Accelerators
+----------------------------------
+Within the PyTorch repo, we define an "Accelerator" as a :class:`torch.device` that is being used
+alongside a CPU to speed up computation. These device use an asynchronous execution scheme,
+using :class:`torch.Stream` and :class:`torch.Event` as their main way to perform synchronization.
+We also assume that only one such accelerator can be available at once on a given host. This allows
+us to use the current accelerator as the default device for relevant concepts such as pinned memory,
+Stream device_type, FSDP, etc.
+
+As of today, accelerator devices are (in no particular order) :doc:`"CUDA" <cuda>`, :doc:`"MTIA" <mtia>`,
+:doc:`"XPU" <xpu>`, :doc:`"MPS" <mps>`, "HPU", and PrivateUse1 (many device not in the PyTorch repo itself).
+
+Many tools in the PyTorch Ecosystem use fork to create subprocesses (for example dataloading
+or intra-op parallelism), it is thus important to delay as much as possible any
+operation that would prevent further forks. This is especially important here as most accelerator's initialization has such effect.
+In practice, you should keep in mind that checking :func:`torch.accelerator.current_accelerator`
+is a compile-time check by default, it is thus always fork-safe.
+On the contrary, passing the ``check_available=True`` flag to this function or calling
+:func:`torch.accelerator.is_available()` will usually prevent later fork.
+
+Some backends provide an experimental opt-in option to make the runtime availability
+check fork-safe. When using the CUDA device ``PYTORCH_NVML_BASED_CUDA_CHECK=1`` can be
+used for example.
+
+.. autosummary::
+    :toctree: generated
+    :nosignatures:
+
+    Stream
+    Event
 
 .. _generators:
 
@@ -272,13 +307,21 @@ Examples::
 
     no_grad
     enable_grad
-    set_grad_enabled
+    autograd.grad_mode.set_grad_enabled
     is_grad_enabled
-    inference_mode
+    autograd.grad_mode.inference_mode
     is_inference_mode_enabled
 
 Math operations
 ---------------
+
+Constants
+~~~~~~~~~~~~~~~~~~~~~~
+
+======================================= ===========================================
+``inf``                                     A floating-point positive infinity. Alias for :attr:`math.inf`.
+``nan``                                     A floating-point "not a number" value. This value is not a legal number. Alias for :attr:`math.nan`.
+======================================= ===========================================
 
 Pointwise Ops
 ~~~~~~~~~~~~~~~~~~~~~~
@@ -682,6 +725,7 @@ Utilities
     set_float32_matmul_precision
     get_float32_matmul_precision
     set_warn_always
+    get_device_module
     is_warn_always_enabled
     vmap
     _assert
@@ -702,11 +746,13 @@ Symbolic Numbers
     :nosignatures:
 
     sym_float
+    sym_fresh_size
     sym_int
     sym_max
     sym_min
     sym_not
     sym_ite
+    sym_sum
 
 Export Path
 -------------
@@ -740,7 +786,7 @@ Optimizations
 
     compile
 
-`torch.compile documentation <https://pytorch.org/docs/main/compile/index.html>`__
+`torch.compile documentation <https://pytorch.org/docs/main/torch.compiler.html>`__
 
 Operator Tags
 ------------------------------------

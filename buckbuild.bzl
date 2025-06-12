@@ -5,13 +5,13 @@ load("@bazel_skylib//lib:paths.bzl", "paths")
 load("//tools/build_defs:fb_native_wrapper.bzl", "fb_native")
 load("//tools/build_defs:fb_xplat_cxx_library.bzl", "fb_xplat_cxx_library")
 load("//tools/build_defs:fb_xplat_genrule.bzl", "fb_xplat_genrule")
+load("//tools/build_defs/windows:windows_flag_map.bzl", "windows_convert_gcc_clang_flags")
 load("//tools/build_defs:fbsource_utils.bzl", "is_arvr_mode")
 load("//tools/build_defs:glob_defs.bzl", "subdir_glob")
 load("//tools/build_defs:platform_defs.bzl", "APPLETVOS", "IOS", "MACOSX")
 load("//tools/build_defs:type_defs.bzl", "is_list", "is_string")
 load("//tools/build_defs/android:build_mode_defs.bzl", is_production_build_android = "is_production_build")
 load("//tools/build_defs/apple:build_mode_defs.bzl", is_production_build_ios = "is_production_build")
-load("//tools/build_defs/windows:windows_flag_map.bzl", "windows_convert_gcc_clang_flags")
 load(
     ":build_variables.bzl",
     "aten_cpu_source_list",
@@ -53,7 +53,6 @@ load(
 )
 
 def read_bool(section, field, default, required = True):
-    # @lint-ignore BUCKRESTRICTEDSYNTAX
     val = read_config(section, field)
     if val != None:
         if val in ["true", "True", "1"]:
@@ -110,6 +109,11 @@ def get_static_dispatch_backend():
         return []
     return static_dispatch_backend.split(";")
 
+def get_glsl_image_format():
+    if read_config("pt", "vulkan_full_precision", "0") == "0":
+        return "rgba16f"
+    return "rgba32f"
+
 def get_glsl_paths():
     paths = [
         "//xplat/caffe2:aten_vulkan_glsl_src_path",
@@ -122,7 +126,7 @@ def get_glsl_paths():
 
     if len(paths) % 2 != 0:
         fail(
-            "gen_vulkan_spv.additional_glsl_paths must contain an even number of elements"
+            "gen_vulkan_spv.additional_glsl_paths must contain an even number of elements",
         )
 
     return " ".join(
@@ -136,10 +140,12 @@ def get_glsl_paths():
                 len(paths),
                 2,
             )
-        ]
+        ],
     )
 
-# @lint-ignore BUCKRESTRICTEDSYNTAX
+def spv_shader_library():
+    pass
+
 IS_OSS = read_config("pt", "is_oss", "0") == "1"  # True for OSS BUCK build, and False for internal BUCK build
 
 NOT_OSS = not IS_OSS
@@ -163,8 +169,8 @@ THIRD_PARTY_LIBS = {
     "flatc": ["//third-party/flatbuffers/fbsource_namespace:flatc", "//third_party:flatc"],
     "fmt": ["//third-party/fmt:fmt", "//third_party:fmt"],
     "glog": ["//third-party/glog:glog", "//third_party:glog"],
-    "gmock": ["//xplat/third-party/gmock:gtest", "//third_party:gmock"],
-    "gtest": ["//xplat/third-party/gmock:gmock", "//third_party:gtest"],
+    "gmock": ["//third-party/googletest:gmock_main", "//third_party:gmock"],
+    "gtest": ["//third-party/googletest:gtest_main", "//third_party:gtest"],
     "kineto": ["//xplat/kineto/libkineto:libkineto", "//third_party:libkineto"],
     "libkineto_headers": ["//xplat/kineto/libkineto:libkineto_headers", "//third_party:libkineto_headers"],
     "omp": ["//xplat/third-party/linker_lib:omp", "//third_party:no-op"],
@@ -172,11 +178,12 @@ THIRD_PARTY_LIBS = {
     "psimd": ["//xplat/third-party/psimd:psimd", "//third_party:psimd"],
     "pthreadpool": ["//xplat/third-party/pthreadpool:pthreadpool", "//third_party:pthreadpool"],
     "pthreadpool_header": ["//xplat/third-party/pthreadpool:pthreadpool_header", "//third_party:pthreadpool_header"],
-    "pyyaml": ["//third-party/pyyaml:pyyaml", "//third_party:pyyaml"],
+    "moodycamel": ["//third-party/moodycamel:moodycamel", "//third_party:moodycamel"],
+    "pyyaml": ["//third-party/pypi/pyyaml:pyyaml", "//third_party:pyyaml"],
     "rt": ["//xplat/third-party/linker_lib:rt", "//third_party:rt"],
     "ruy": ["//third-party/ruy:ruy_xplat_lib", "//third_party:ruy_lib"],
-    "typing-extensions": ["//third-party/typing-extensions:typing-extensions", "//third_party:typing-extensions"],
-    "sleef_arm": ["//third-party/sleef:sleef_arm", "//third_party:sleef_arm"],
+    "nlohmann-json": ["fbsource//third-party/nlohmann-json:nlohmann-json", "//third_party:nlohmann-json"],
+    "sleef_arm": ["//third-party/sleef:sleef", "//third_party:sleef_arm"],
 }
 
 def third_party(name):
@@ -188,6 +195,9 @@ def get_pt_compiler_flags():
     return select({
         "DEFAULT": _PT_COMPILER_FLAGS,
         "ovr_config//compiler:cl": windows_convert_gcc_clang_flags(_PT_COMPILER_FLAGS),
+    }) + select({
+        "DEFAULT": [],
+        "ovr_config//os:macos": ["-fvisibility=default"],
     })
 
 _PT_COMPILER_FLAGS = [
@@ -207,7 +217,6 @@ _PT_COMPILER_FLAGS = [
 ATEN_COMPILER_FLAGS = [
     "-fexceptions",
     "-frtti",
-    "-fPIC",
     "-Os",
     "-Wno-absolute-value",
     "-Wno-deprecated-declarations",
@@ -219,10 +228,20 @@ ATEN_COMPILER_FLAGS = [
     "-Wno-unused-variable",
     "-Wno-pass-failed",
     "-Wno-shadow",
-]
+] + select({
+    # Not supported by clang on Windows
+    "DEFAULT": ["-fPIC"],
+    "ovr_config//compiler:clang-windows": [],
+}) + select({
+    "DEFAULT": [],
+    "ovr_config//os:macos": ["-fvisibility=default"],
+})
 
 def get_aten_compiler_flags():
-    return ATEN_COMPILER_FLAGS
+    return select({
+        "DEFAULT": ATEN_COMPILER_FLAGS,
+        "ovr_config//compiler:cl": windows_convert_gcc_clang_flags(ATEN_COMPILER_FLAGS),
+    })
 
 _COMMON_PREPROCESSOR_FLAGS = [
     "-DC10_MOBILE",
@@ -234,6 +253,9 @@ _COMMON_PREPROCESSOR_FLAGS = [
 ) + (
     ["-DDISABLE_WARN"] if get_disable_warn() else []
 )
+
+def get_no_as_needed_linker_flag():
+    return select({"DEFAULT": ["-Wl,--no-as-needed"], "ovr_config//os:macos": []})
 
 def get_aten_preprocessor_flags():
     # read_config is not allowed outside of function in Starlark
@@ -253,7 +275,6 @@ def get_aten_preprocessor_flags():
         "-DPYTORCH_QNNPACK_RUNTIME_QUANTIZATION",
         "-DAT_PARALLEL_OPENMP_FBXPLAT=0",
         "-DAT_PARALLEL_NATIVE_FBXPLAT=1",
-        "-DAT_PARALLEL_NATIVE_TBB_FBXPLAT=0",
         "-DUSE_LAPACK_FBXPLAT=0",
         "-DAT_BLAS_F2C_FBXPLAT=0",
         "-DAT_BLAS_USE_CBLAS_DOT_FBXPLAT=0",
@@ -271,14 +292,13 @@ def get_pt_preprocessor_flags():
         "-D_THP_CORE",
         "-DUSE_SCALARS",
         "-DNO_CUDNN_DESTROY_HANDLE",
-        "-DBUILD_CAFFE2",
     ]
 
     if _is_build_mode_dev():
         PT_PREPROCESSOR_FLAGS.append("-DENABLE_PYTORCH_NON_PRODUCTION_BUILDS")
     return PT_PREPROCESSOR_FLAGS
 
-# This needs to be kept in sync with https://github.com/pytorch/pytorch/blob/release/1.9/torchgen/gen.py#L892
+# This needs to be kept in sync with https://github.com/pytorch/pytorch/blob/release/1.9/torchgen/gen.py#L892  @lint-ignore
 PT_BACKEND_HEADERS = [
     "CPU",
     "CUDA",
@@ -343,10 +363,10 @@ def get_aten_generated_files(enabled_backends):
     # and is intentionally omitted from here
     src_files = [
         "RegisterBackendSelect.cpp",
-        "RegisterCompositeImplicitAutograd.cpp",
-        "RegisterCompositeImplicitAutogradNestedTensor.cpp",
-        "RegisterCompositeExplicitAutograd.cpp",
-        "RegisterCompositeExplicitAutogradNonFunctional.cpp",
+        "RegisterCompositeImplicitAutograd_0.cpp",
+        "RegisterCompositeImplicitAutogradNestedTensor_0.cpp",
+        "RegisterCompositeExplicitAutograd_0.cpp",
+        "RegisterCompositeExplicitAutogradNonFunctional_0.cpp",
         "CompositeViewCopyKernels.cpp",
         "RegisterSchema.cpp",
         "Declarations.yaml",
@@ -377,6 +397,7 @@ def get_aten_generated_files(enabled_backends):
         "core/TensorMethods.cpp",
         "core/aten_interned_strings.h",
         "core/enum_tag.h",
+        "torch/csrc/inductor/aoti_torch/generated/c_shim_cpu.cpp",
     ] + get_aten_derived_type_srcs(enabled_backends)
 
     # This is tiresome.  A better strategy would be to unconditionally
@@ -398,20 +419,22 @@ def get_aten_generated_files(enabled_backends):
 
 def get_aten_derived_type_src_rules(aten_rule_name, enabled_backends):
     return [
-        ":{}[{}]".format(aten_rule_name, "Register" + backend + ".cpp")
-        for backend in enabled_backends
-    ]
+        ":{}[{}]".format(aten_rule_name, "Register" + backend + "_0.cpp")
+        for backend in enabled_backends if backend != "CPU"
+    ] + ([
+        ":{}[RegisterCPU_{}.cpp]".format(aten_rule_name, x) for x in range(4)
+    ] if "CPU" in enabled_backends else [])
 
 def get_aten_selective_cpp_rules(aten_rule_name, enabled_backends):
     return [
         ":{}[{}]".format(aten_rule_name, f)
-        for f in ["RegisterCompositeImplicitAutograd.cpp", "RegisterCompositeImplicitAutogradNestedTensor.cpp", "RegisterCompositeExplicitAutograd.cpp", "RegisterCompositeExplicitAutogradNonFunctional.cpp", "RegisterSchema.cpp", "RegisterBackendSelect.cpp", "CompositeViewCopyKernels.cpp"]
+        for f in ["RegisterCompositeImplicitAutograd_0.cpp", "RegisterCompositeImplicitAutogradNestedTensor_0.cpp", "RegisterCompositeExplicitAutograd_0.cpp", "RegisterCompositeExplicitAutogradNonFunctional_0.cpp", "RegisterSchema.cpp", "RegisterBackendSelect.cpp", "CompositeViewCopyKernels.cpp"]
     ] + get_aten_derived_type_src_rules(aten_rule_name, enabled_backends)
 
 def get_aten_derived_type_srcs(enabled_backends):
     return [
-        "Register" + derived_type + ".cpp"
-        for derived_type in enabled_backends
+        "Register" + derived_type + "_0.cpp"
+        for derived_type in enabled_backends if derived_type != "CPU"
     ] + [
         derived_type + "Functions.h"
         for derived_type in enabled_backends
@@ -420,7 +443,9 @@ def get_aten_derived_type_srcs(enabled_backends):
         derived_type + "Functions_inl.h"
         for derived_type in enabled_backends
         if derived_type in PT_BACKEND_HEADERS or derived_type in get_static_dispatch_backend()
-    ]
+    ] + ([
+        "RegisterCPU_{}.cpp".format(x) for x in range(4)
+    ] if "CPU" in enabled_backends else [])
 
 def gen_aten_files(
         name,
@@ -461,6 +486,7 @@ def gen_aten_files(
         cmd = "$(exe {}torchgen:gen) ".format(ROOT_PATH) + " ".join([
             "--source-path $(location {}:aten_src_path)/aten/src/ATen".format(ROOT),
             "--install_dir $OUT",
+            "--aoti_install_dir $OUT/torch/csrc/inductor/aoti_torch/generated"
         ] + extra_params),
         visibility = visibility,
         compatible_with = compatible_with,
@@ -695,6 +721,43 @@ def gen_aten_libtorch_files(name, extra_params = [], compatible_with = [], apple
         apple_sdks = apple_sdks,
     )
 
+def vulkan_spv_shader_library(name, spv_filegroup):
+    genrule_cmd = [
+        "$(exe //xplat/caffe2/tools:gen_aten_vulkan_spv_bin)",
+        "--glsl-paths $(location {})".format(spv_filegroup),
+        "--output-path $OUT --env FLOAT_IMAGE_FORMAT={}".format(get_glsl_image_format()),
+        "--glslc-path=$(exe //xplat/caffe2/fb/vulkan/dotslash:glslc)",
+        "--tmp-dir-path=$TMP",
+    ]
+
+    genrule_name = "gen_{}_cpp".format(name)
+    fb_xplat_genrule(
+        name = "gen_{}_cpp".format(name),
+        outs = {
+            "{}.cpp".format(name): ["spv.cpp"],
+        },
+        cmd = " ".join(genrule_cmd),
+        default_outs = ["."],
+        labels = ["uses_dotslash"],
+    )
+
+    fb_xplat_cxx_library(
+        name = name,
+        srcs = [
+            ":{}[{}.cpp]".format(genrule_name, name),
+        ],
+        # Static initialization is used to register shaders to the global shader registry,
+        # therefore link_whole must be True to make sure unused symbols are not discarded.
+        # @lint-ignore BUCKLINT: Avoid `link_whole=True`
+        link_whole = True,
+        # Define a soname that can be used for dynamic loading in Java, Python, etc.
+        soname = "lib{}.$(ext)".format(name),
+        visibility = ["PUBLIC"],
+        exported_deps = [
+            "//xplat/caffe2:torch_vulkan_api",
+        ],
+    )
+
 def copy_metal(name, apple_sdks = None):
     cmd = []
     cmd_exe = []
@@ -764,9 +827,7 @@ def get_pt_operator_registry_dict(
 
     return dict(
         srcs = code_gen_files["srcs"],
-        linker_flags = [
-            "-Wl,--no-as-needed",
-        ],
+        linker_flags = get_no_as_needed_linker_flag(),
         # @lint-ignore BUCKLINT link_whole
         link_whole = True,
         soname = "libtorch-code-gen.$(ext)",
@@ -802,7 +863,6 @@ def define_buck_targets(
     # @lint-ignore BUCKLINT
     fb_native.filegroup(
         name = "metal_build_srcs",
-        # @lint-ignore BUCKRESTRICTEDSYNTAX
         srcs = glob(METAL_SOURCE_LIST),
         visibility = [
             "PUBLIC",
@@ -813,7 +873,6 @@ def define_buck_targets(
     fb_native.filegroup(
         name = "templated_selective_build_srcs",
         # NB: no glob here, there are generated targets in this list!
-        # @lint-ignore BUCKRESTRICTEDSYNTAX
         srcs = glob(TEMPLATE_SOURCE_LIST) + aten_ufunc_generated_all_cpu_sources(":gen_aten[{}]"),
         visibility = [
             "PUBLIC",
@@ -886,6 +945,7 @@ def define_buck_targets(
             [
                 ("torch/csrc/api/include", "torch/**/*.h"),
                 ("", "torch/csrc/**/*.h"),
+                ("", "torch/standalone/**/*.h"),
                 ("", "torch/script.h"),
                 ("", "torch/library.h"),
                 ("", "torch/custom_class.h"),
@@ -930,6 +990,10 @@ def define_buck_targets(
     fb_xplat_cxx_library(
         name = "torch_mobile_headers",
         header_namespace = "",
+        compiler_flags = select({
+            "DEFAULT": [],
+            "ovr_config//os:macos": ["-fvisibility=default"],
+        }),
         exported_headers = subdir_glob(
             [
                 ("", "torch/csrc/jit/mobile/*.h"),
@@ -946,6 +1010,7 @@ def define_buck_targets(
             "Config.h": ":generate_aten_config[Config.h]",
         },
         labels = labels,
+        visibility = ["PUBLIC"],
     )
 
     fb_xplat_cxx_library(
@@ -955,6 +1020,7 @@ def define_buck_targets(
             "Functions.h": ":gen_aten_libtorch[autograd/generated/Functions.h]",
             "VariableType.h": ":gen_aten_libtorch[autograd/generated/VariableType.h]",
             "variable_factories.h": ":gen_aten_libtorch[autograd/generated/variable_factories.h]",
+            "ViewFuncs.h": ":gen_aten_libtorch[autograd/generated/ViewFuncs.h]",
             # Don't build python bindings on mobile.
             #"python_functions.h",
         },
@@ -998,7 +1064,6 @@ def define_buck_targets(
         srcs = [
             "aten/src/ATen/native/native_functions.yaml",
             "aten/src/ATen/native/tags.yaml",
-            # @lint-ignore BUCKRESTRICTEDSYNTAX
         ] + glob(["aten/src/ATen/templates/*"]),
         visibility = [
             "PUBLIC",
@@ -1023,6 +1088,7 @@ def define_buck_targets(
         ],
     )
 
+    # TODO: Enable support for KleidiAI bazel build
     # @lint-ignore BUCKLINT
     fb_native.genrule(
         name = "generate_aten_config",
@@ -1067,9 +1133,6 @@ def define_buck_targets(
             "@AT_PARALLEL_NATIVE@",
             "AT_PARALLEL_NATIVE_FBXPLAT",
             "--replace",
-            "@AT_PARALLEL_NATIVE_TBB@",
-            "AT_PARALLEL_NATIVE_TBB_FBXPLAT",
-            "--replace",
             "@AT_BUILD_WITH_LAPACK@",
             "USE_LAPACK_FBXPLAT",
             "--replace",
@@ -1078,6 +1141,9 @@ def define_buck_targets(
             "--replace",
             "@AT_BLAS_USE_CBLAS_DOT@",
             "AT_BLAS_USE_CBLAS_DOT_FBXPLAT",
+            "--replace",
+            "@AT_KLEIDIAI_ENABLED@",
+            "0",
         ]),
         outs = {
             "Config.h": ["Config.h"],
@@ -1131,7 +1197,10 @@ def define_buck_targets(
         srcs = [
             "torch/csrc/jit/mobile/observer.cpp",
         ] + ([] if IS_OSS else ["torch/fb/observers/MobileObserverUtil.cpp"]),
-        compiler_flags = ["-fexceptions"],
+        compiler_flags = ["-fexceptions"] + select({
+            "DEFAULT": [],
+            "ovr_config//os:macos": ["-fvisibility=default"],
+        }),
         header_namespace = "",
         exported_headers = subdir_glob(
             [
@@ -1195,7 +1264,7 @@ def define_buck_targets(
         # found definied in runtime
         # @lint-ignore BUCKLINT link_whole
         link_whole = True,
-        linker_flags = ["-Wl,--no-as-needed"],
+        linker_flags = get_no_as_needed_linker_flag(),
         visibility = ["PUBLIC"],
         exported_deps = [
             ":aten_cpu",
@@ -1227,9 +1296,7 @@ def define_buck_targets(
         },
         # @lint-ignore BUCKLINT link_whole
         link_whole = True,
-        linker_flags = [
-            "-Wl,--no-as-needed",
-        ],
+        linker_flags = get_no_as_needed_linker_flag(),
         visibility = ["PUBLIC"],
         exported_deps = [
             ":aten_cpu",
@@ -1260,9 +1327,7 @@ def define_buck_targets(
         header_namespace = "",
         # @lint-ignore BUCKLINT link_whole
         link_whole = True,
-        linker_flags = [
-            "-Wl,--no-as-needed",
-        ],
+        linker_flags = get_no_as_needed_linker_flag(),
         visibility = ["PUBLIC"],
         deps = [
             ":torch_mobile_deserialize",
@@ -1282,9 +1347,7 @@ def define_buck_targets(
         exported_preprocessor_flags = get_pt_preprocessor_flags() + (["-DSYMBOLICATE_MOBILE_DEBUG_HANDLE"] if get_enable_eager_symbolication() else []),
         # @lint-ignore BUCKLINT link_whole
         link_whole = True,
-        linker_flags = [
-            "-Wl,--no-as-needed",
-        ],
+        linker_flags = get_no_as_needed_linker_flag(),
         visibility = ["PUBLIC"],
         deps = [
             ":generated-autograd-headers",
@@ -1321,9 +1384,7 @@ def define_buck_targets(
         # found definied in runtime
         # @lint-ignore BUCKLINT link_whole
         link_whole = True,
-        linker_flags = [
-            "-Wl,--no-as-needed",
-        ],
+        linker_flags = get_no_as_needed_linker_flag(),
         visibility = ["PUBLIC"],
         exported_deps = [
             ":aten_cpu",
@@ -1352,9 +1413,7 @@ def define_buck_targets(
         # operators, registerations and other few symbols are need in runtime
         # @lint-ignore BUCKLINT link_whole
         link_whole = True,
-        linker_flags = [
-            "-Wl,--no-as-needed",
-        ],
+        linker_flags = get_no_as_needed_linker_flag(),
         visibility = ["PUBLIC"],
         deps = [
             ":generated-autograd-headers",
@@ -1461,7 +1520,7 @@ def define_buck_targets(
             "torch/csrc/jit/mobile/train/random.cpp",
             "torch/csrc/jit/mobile/train/sequential.cpp",
             ":gen_aten_libtorch[autograd/generated/Functions.cpp]",
-            "torch/csrc/quantized/quantized_backward.cpp",
+            ":gen_aten_libtorch[autograd/generated/ViewFuncs.cpp]",
         ],
         compiler_flags = get_pt_compiler_flags(),
         exported_preprocessor_flags = get_pt_preprocessor_flags() + ["-DUSE_MOBILE_CLASSTYPE"],
@@ -1602,9 +1661,7 @@ def define_buck_targets(
         # operators, registerations and other few symbols are need in runtime
         # @lint-ignore BUCKLINT link_whole
         link_whole = True,
-        linker_flags = [
-            "-Wl,--no-as-needed",
-        ],
+        linker_flags = get_no_as_needed_linker_flag(),
         visibility = ["PUBLIC"],
         deps = [
             ":caffe2_serialize",
@@ -1633,9 +1690,7 @@ def define_buck_targets(
         exported_preprocessor_flags = get_pt_preprocessor_flags() + (["-DSYMBOLICATE_MOBILE_DEBUG_HANDLE"] if get_enable_eager_symbolication() else []),
         # @lint-ignore BUCKLINT link_whole
         link_whole = True,
-        linker_flags = [
-            "-Wl,--no-as-needed",
-        ],
+        linker_flags = get_no_as_needed_linker_flag(),
         visibility = ["PUBLIC"],
         deps = [
             ":generated-autograd-headers",
@@ -1658,9 +1713,7 @@ def define_buck_targets(
         fbandroid_compiler_flags = c2_fbandroid_xplat_compiler_flags,
         # @lint-ignore BUCKLINT link_whole
         link_whole = True,
-        linker_flags = [
-            "-Wl,--no-as-needed",
-        ],
+        linker_flags = get_no_as_needed_linker_flag(),
         visibility = ["PUBLIC"],
         exported_deps = [
             ":aten_cpu",
@@ -1680,13 +1733,12 @@ def define_buck_targets(
         ],
         # @lint-ignore BUCKLINT link_whole
         link_whole = True,
-        linker_flags = [
-            "-Wl,--no-as-needed",
-        ],
+        linker_flags = get_no_as_needed_linker_flag(),
         visibility = ["PUBLIC"],
         deps = [
             third_party("glog"),
             third_party("kineto"),
+            third_party("nlohmann-json"),
         ],
         exported_deps = [
             ":aten_cpu",
@@ -1704,9 +1756,7 @@ def define_buck_targets(
         ],
         # @lint-ignore BUCKLINT link_whole
         link_whole = True,
-        linker_flags = [
-            "-Wl,--no-as-needed",
-        ],
+        linker_flags = get_no_as_needed_linker_flag(),
         visibility = ["PUBLIC"],
         exported_deps = [
             ":torch_common",
@@ -1800,9 +1850,7 @@ def define_buck_targets(
         # found definied in runtime
         # @lint-ignore BUCKLINT link_whole
         link_whole = True,
-        linker_flags = [
-            "-Wl,--no-as-needed",
-        ],
+        linker_flags = get_no_as_needed_linker_flag(),
         visibility = ["PUBLIC"],
         deps = [
             ":mobile_bytecode",
@@ -1828,9 +1876,7 @@ def define_buck_targets(
         srcs = [
             "torch/csrc/jit/serialization/flatbuffer_serializer_jit.cpp",
         ],
-        linker_flags = [
-            "-Wl,--no-as-needed",
-        ],
+        linker_flags = get_no_as_needed_linker_flag(),
         visibility = ["PUBLIC"],
         deps = [
             ":flatbuffer_loader",
@@ -1872,9 +1918,7 @@ def define_buck_targets(
         exported_preprocessor_flags = get_pt_preprocessor_flags() + (["-DSYMBOLICATE_MOBILE_DEBUG_HANDLE"] if get_enable_eager_symbolication() else []),
         # @lint-ignore BUCKLINT link_whole
         link_whole = True,
-        linker_flags = [
-            "-Wl,--no-as-needed",
-        ],
+        linker_flags = get_no_as_needed_linker_flag(),
         visibility = ["PUBLIC"],
         deps = [],
         exported_deps = [
@@ -1942,7 +1986,7 @@ def define_buck_targets(
             ] + select({
                 "DEFAULT": [],
                 "ovr_config//runtime:fbcode-arm64": [
-                  third_party("sleef_arm"),
+                    third_party("sleef_arm"),
                 ],
             }),
             compiler_flags = get_aten_compiler_flags(),
@@ -1996,7 +2040,7 @@ def define_buck_targets(
                 ("", "torch/csrc/utils/*.h"),
                 ("", "aten/src/ATen/quantized/*.h"),
             ] + ([
-                ("third_party/miniz-2.1.0", "*.h"),
+                ("third_party/miniz-3.0.2", "*.h"),
             ] if NOT_OSS else []),
             exclude = [
                 "torch/csrc/jit/serialization/mobile_bytecode_generated.h",
@@ -2007,14 +2051,12 @@ def define_buck_targets(
             "ovr_config//os:xtensa-xos": [
                 "-fdata-sections",
                 "-ffunction-sections",
-            ],
+            ]
         }),
         exported_preprocessor_flags = get_pt_preprocessor_flags() + [
             "-DMIN_EDGE_RUNTIME",
         ],
-        linker_flags = [
-            "-Wl,--no-as-needed",
-        ] + select({
+        linker_flags = get_no_as_needed_linker_flag() + select({
             "DEFAULT": [],
             "ovr_config//os:macos": [
                 "-dead_strip",
@@ -2064,9 +2106,7 @@ def define_buck_targets(
         }),
         # @lint-ignore BUCKLINT link_whole
         link_whole = True,
-        linker_flags = [
-            "-Wl,--no-as-needed",
-        ],
+        linker_flags = get_no_as_needed_linker_flag(),
         visibility = ["PUBLIC"],
         exported_deps = [
             ":generated_aten_config_header",
@@ -2128,9 +2168,7 @@ def define_buck_targets(
         }),
         # @lint-ignore BUCKLINT link_whole
         link_whole = True,
-        linker_flags = [
-            "-Wl,--no-as-needed",
-        ],
+        linker_flags = get_no_as_needed_linker_flag(),
         visibility = ["PUBLIC"],
         exported_deps = [
             ":min_runtime_lib",
@@ -2189,9 +2227,7 @@ def define_buck_targets(
         }),
         # @lint-ignore BUCKLINT link_whole
         link_whole = True,
-        linker_flags = [
-            "-Wl,--no-as-needed",
-        ],
+        linker_flags = get_no_as_needed_linker_flag(),
         visibility = ["PUBLIC"],
         exported_deps = [
             ":aten_header",

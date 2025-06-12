@@ -1,3 +1,5 @@
+:orphan:
+
 .. note::
 
    This page has been deprecated. Please refer to the `Contribution Guide <https://github.com/pytorch/pytorch/wiki/The-Ultimate-Guide-to-PyTorch-Contributions>`_ on the PyTorch Wiki.
@@ -303,7 +305,7 @@ Frequently Asked Questions
    tasks or pull requests with your environment details is helpful and
    appreciated.
 -  **CI tests failed, what does it mean?** Maybe your PR is based
-   off a broken main bracnh? You can try to rebase your change on top
+   off a broken main branch? You can try to rebase your change on top
    of the latest main branch. You can also see the current status of
    main branch's CI at https://hud.pytorch.org/.
 -  **What are the most high risk changes?** Anything that touches build
@@ -323,13 +325,13 @@ Python Docs
 PyTorch documentation is generated from python source using
 `Sphinx <https://www.sphinx-doc.org/en/master/>`__. Generated HTML is
 copied to the docs folder in the main branch of
-`pytorch.github.io <https://github.com/pytorch/pytorch.github.io/tree/master/docs>`__,
+`pytorch.org/docs <https://pytorch.org/docs/main>`__,
 and is served via GitHub pages.
 
 -  Site: https://pytorch.org/docs
 -  GitHub: https://github.com/pytorch/pytorch/tree/main/docs
 -  Served from:
-   `https://github.com/pytorch/pytorch.github.io/tree/master/docs <https://github.com/pytorch/pytorch.github.io/tree/master/docs>`__
+   `https://pytorch.org/docs/main <https://pytorch.org/docs/main>`__
 
 C++ Docs
 ~~~~~~~~

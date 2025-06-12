@@ -1,22 +1,24 @@
 #include <c10/cuda/CUDAAllocatorConfig.h>
+#include <c10/cuda/CUDACachingAllocator.h>
+#include <c10/util/llvmMathExtras.h>
 
 #if !defined(USE_ROCM) && defined(PYTORCH_C10_DRIVER_API_SUPPORTED)
 #include <c10/cuda/driver_api.h>
 #endif
 
-namespace c10 {
-namespace cuda {
-namespace CUDACachingAllocator {
+namespace c10::cuda::CUDACachingAllocator {
 
 constexpr size_t kRoundUpPowerOfTwoIntervals = 16;
 
 CUDAAllocatorConfig::CUDAAllocatorConfig()
     : m_max_split_size(std::numeric_limits<size_t>::max()),
+      m_max_non_split_rounding_size(kLargeBuffer),
       m_garbage_collection_threshold(0),
       m_pinned_num_register_threads(1),
       m_expandable_segments(false),
       m_release_lock_on_cudamalloc(false),
-      m_pinned_use_cuda_host_register(false) {
+      m_pinned_use_cuda_host_register(false),
+      m_pinned_use_background_threads(false) {
   m_roundup_power2_divisions.assign(kRoundUpPowerOfTwoIntervals, 0);
 }
 
@@ -40,20 +42,19 @@ size_t CUDAAllocatorConfig::roundup_power2_divisions(size_t size) {
 }
 
 void CUDAAllocatorConfig::lexArgs(
-    const char* env,
+    const std::string& env,
     std::vector<std::string>& config) {
   std::vector<char> buf;
 
-  size_t env_length = strlen(env);
-  for (size_t i = 0; i < env_length; i++) {
-    if (env[i] == ',' || env[i] == ':' || env[i] == '[' || env[i] == ']') {
+  for (char ch : env) {
+    if (ch == ',' || ch == ':' || ch == '[' || ch == ']') {
       if (!buf.empty()) {
         config.emplace_back(buf.begin(), buf.end());
         buf.clear();
       }
-      config.emplace_back(1, env[i]);
-    } else if (env[i] != ' ') {
-      buf.emplace_back(static_cast<char>(env[i]));
+      config.emplace_back(1, ch);
+    } else if (ch != ' ') {
+      buf.emplace_back(ch);
     }
   }
   if (!buf.empty()) {
@@ -66,7 +67,7 @@ void CUDAAllocatorConfig::consumeToken(
     size_t i,
     const char c) {
   TORCH_CHECK(
-      i < config.size() && config[i].compare(std::string(1, c)) == 0,
+      i < config.size() && config[i] == std::string(1, c),
       "Error parsing CachingAllocator settings, expected ",
       c,
       "");
@@ -76,18 +77,40 @@ size_t CUDAAllocatorConfig::parseMaxSplitSize(
     const std::vector<std::string>& config,
     size_t i) {
   consumeToken(config, ++i, ':');
+  constexpr int mb = 1024 * 1024;
   if (++i < config.size()) {
     size_t val1 = stoi(config[i]);
     TORCH_CHECK(
-        val1 > kLargeBuffer / (1024 * 1024),
+        val1 > kLargeBuffer / mb,
         "CachingAllocator option max_split_size_mb too small, must be > ",
-        kLargeBuffer / (1024 * 1024),
+        kLargeBuffer / mb,
         "");
-    val1 = std::max(val1, kLargeBuffer / (1024 * 1024));
-    val1 = std::min(val1, (std::numeric_limits<size_t>::max() / (1024 * 1024)));
+    val1 = std::max(val1, kLargeBuffer / mb);
+    val1 = std::min(val1, (std::numeric_limits<size_t>::max() / mb));
     m_max_split_size = val1 * 1024 * 1024;
   } else {
     TORCH_CHECK(false, "Error, expecting max_split_size_mb value", "");
+  }
+  return i;
+}
+
+size_t CUDAAllocatorConfig::parseMaxNonSplitRoundingSize(
+    const std::vector<std::string>& config,
+    size_t i) {
+  consumeToken(config, ++i, ':');
+  constexpr int mb = 1024 * 1024;
+  if (++i < config.size()) {
+    size_t val1 = stoi(config[i]);
+    TORCH_CHECK(
+        val1 > kLargeBuffer / mb,
+        "CachingAllocator option max_non_split_rounding_mb too small, must be > ",
+        kLargeBuffer / mb,
+        "");
+    val1 = std::max(val1, kLargeBuffer / mb);
+    val1 = std::min(val1, (std::numeric_limits<size_t>::max() / mb));
+    m_max_non_split_rounding_size = val1 * 1024 * 1024;
+  } else {
+    TORCH_CHECK(false, "Error, expecting max_non_split_rounding_mb value", "");
   }
   return i;
 }
@@ -117,9 +140,10 @@ size_t CUDAAllocatorConfig::parseRoundUpPower2Divisions(
   bool first_value = true;
 
   if (++i < config.size()) {
-    if (config[i].compare("[") == 0) {
+    if (std::string_view(config[i]) == "[") {
       size_t last_index = 0;
-      while (++i < config.size() && config[i].compare("]") != 0) {
+      // NOLINTNEXTLINE(bugprone-inc-dec-in-conditions)
+      while (++i < config.size() && std::string_view(config[i]) != "]") {
         const std::string& val1 = config[i];
         size_t val2 = 0;
 
@@ -131,11 +155,11 @@ size_t CUDAAllocatorConfig::parseRoundUpPower2Divisions(
               false, "Error parsing roundup_power2_divisions value", "");
         }
         TORCH_CHECK(
-            llvm::isPowerOf2_64(val2),
-            "For roundups, the divisons has to be power of 2 ",
+            val2 == 0 || llvm::isPowerOf2_64(val2),
+            "For roundups, the divisons has to be power of 2 or 0 to disable roundup ",
             "");
 
-        if (val1.compare(">") == 0) {
+        if (std::string_view(val1) == ">") {
           std::fill(
               std::next(
                   m_roundup_power2_divisions.begin(),
@@ -170,7 +194,7 @@ size_t CUDAAllocatorConfig::parseRoundUpPower2Divisions(
           last_index = index;
         }
 
-        if (config[i + 1].compare("]") != 0) {
+        if (std::string_view(config[i + 1]) != "]") {
           consumeToken(config, ++i, ',');
         }
       }
@@ -195,6 +219,40 @@ size_t CUDAAllocatorConfig::parseAllocatorConfig(
     const std::vector<std::string>& config,
     size_t i,
     bool& used_cudaMallocAsync) {
+  // For ease of maintenance and understanding, the CUDA and ROCm
+  // implementations of this function are separated. This avoids having many
+  // #ifdef's throughout.
+#ifdef USE_ROCM
+  // Ease burden on ROCm users by allowing either cuda or hip tokens.
+  // cuda token is broken up to prevent hipify matching it.
+#define PYTORCH_TOKEN1 \
+  "cud"                \
+  "aMallocAsync"
+#define PYTORCH_TOKEN2 "hipMallocAsync"
+  consumeToken(config, ++i, ':');
+  if (++i < config.size()) {
+    TORCH_CHECK(
+        ((config[i] == "native") || (config[i] == PYTORCH_TOKEN1) ||
+         (config[i] == PYTORCH_TOKEN2)),
+        "Unknown allocator backend, "
+        "options are native, " PYTORCH_TOKEN1 ", and " PYTORCH_TOKEN2);
+    used_cudaMallocAsync =
+        (config[i] == PYTORCH_TOKEN1 || config[i] == PYTORCH_TOKEN2);
+    TORCH_INTERNAL_ASSERT(
+        config[i] == get()->name() ||
+            (config[i] == PYTORCH_TOKEN1 && get()->name() == PYTORCH_TOKEN2),
+        "Allocator backend parsed at runtime != "
+        "allocator backend parsed at load time, ",
+        config[i],
+        " != ",
+        get()->name());
+  } else {
+    TORCH_CHECK(false, "Error parsing backend value", "");
+  }
+  return i;
+#undef PYTORCH_TOKEN1
+#undef PYTORCH_TOKEN2
+#else // USE_ROCM
   consumeToken(config, ++i, ':');
   if (++i < config.size()) {
     TORCH_CHECK(
@@ -202,8 +260,6 @@ size_t CUDAAllocatorConfig::parseAllocatorConfig(
         "Unknown allocator backend, "
         "options are native and cudaMallocAsync");
     used_cudaMallocAsync = (config[i] == "cudaMallocAsync");
-#ifndef USE_ROCM
-    // HIP supports hipMallocAsync and does not need to check versions
     if (used_cudaMallocAsync) {
 #if CUDA_VERSION >= 11040
       int version = 0;
@@ -221,7 +277,6 @@ size_t CUDAAllocatorConfig::parseAllocatorConfig(
           CUDA_VERSION);
 #endif
     }
-#endif
     TORCH_INTERNAL_ASSERT(
         config[i] == get()->name(),
         "Allocator backend parsed at runtime != "
@@ -230,9 +285,10 @@ size_t CUDAAllocatorConfig::parseAllocatorConfig(
     TORCH_CHECK(false, "Error parsing backend value", "");
   }
   return i;
+#endif // USE_ROCM
 }
 
-void CUDAAllocatorConfig::parseArgs(const char* env) {
+void CUDAAllocatorConfig::parseArgs(const std::optional<std::string>& env) {
   // If empty, set the default values
   m_max_split_size = std::numeric_limits<size_t>::max();
   m_roundup_power2_divisions.assign(kRoundUpPowerOfTwoIntervals, 0);
@@ -240,59 +296,79 @@ void CUDAAllocatorConfig::parseArgs(const char* env) {
   bool used_cudaMallocAsync = false;
   bool used_native_specific_option = false;
 
-  if (env == nullptr) {
+  if (!env.has_value()) {
     return;
+  }
+  {
+    std::lock_guard<std::mutex> lock(m_last_allocator_settings_mutex);
+    m_last_allocator_settings = env.value();
   }
 
   std::vector<std::string> config;
-  lexArgs(env, config);
+  lexArgs(env.value(), config);
 
   for (size_t i = 0; i < config.size(); i++) {
-    if (config[i].compare("max_split_size_mb") == 0) {
+    std::string_view config_item_view(config[i]);
+    if (config_item_view == "max_split_size_mb") {
       i = parseMaxSplitSize(config, i);
       used_native_specific_option = true;
-    } else if (config[i].compare("garbage_collection_threshold") == 0) {
+    } else if (config_item_view == "max_non_split_rounding_mb") {
+      i = parseMaxNonSplitRoundingSize(config, i);
+      used_native_specific_option = true;
+    } else if (config_item_view == "garbage_collection_threshold") {
       i = parseGarbageCollectionThreshold(config, i);
       used_native_specific_option = true;
-    } else if (config[i].compare("roundup_power2_divisions") == 0) {
+    } else if (config_item_view == "roundup_power2_divisions") {
       i = parseRoundUpPower2Divisions(config, i);
       used_native_specific_option = true;
-    } else if (config[i].compare("backend") == 0) {
+    } else if (config_item_view == "backend") {
       i = parseAllocatorConfig(config, i, used_cudaMallocAsync);
-    } else if (config[i] == "expandable_segments") {
+    } else if (config_item_view == "expandable_segments") {
       used_native_specific_option = true;
       consumeToken(config, ++i, ':');
       ++i;
       TORCH_CHECK(
-          i < config.size() && (config[i] == "True" || config[i] == "False"),
+          i < config.size() &&
+              (std::string_view(config[i]) == "True" ||
+               std::string_view(config[i]) == "False"),
           "Expected a single True/False argument for expandable_segments");
-      m_expandable_segments = (config[i] == "True");
+      config_item_view = config[i];
+      m_expandable_segments = (config_item_view == "True");
     } else if (
         // ROCm build's hipify step will change "cuda" to "hip", but for ease of
         // use, accept both. We must break up the string to prevent hipify here.
-        config[i].compare("release_lock_on_hipmalloc") == 0 ||
-        config[i].compare("release_lock_on_c"
-                          "udamalloc") == 0) {
+        config_item_view == "release_lock_on_hipmalloc" ||
+        config_item_view ==
+            "release_lock_on_c"
+            "udamalloc") {
       used_native_specific_option = true;
       consumeToken(config, ++i, ':');
       ++i;
       TORCH_CHECK(
-          i < config.size() && (config[i] == "True" || config[i] == "False"),
+          i < config.size() &&
+              (std::string_view(config[i]) == "True" ||
+               std::string_view(config[i]) == "False"),
           "Expected a single True/False argument for release_lock_on_cudamalloc");
-      m_release_lock_on_cudamalloc = (config[i] == "True");
+      config_item_view = config[i];
+      m_release_lock_on_cudamalloc = (config_item_view == "True");
     } else if (
         // ROCm build's hipify step will change "cuda" to "hip", but for ease of
         // use, accept both. We must break up the string to prevent hipify here.
-        config[i].compare("pinned_use_hip_host_register") == 0 ||
-        config[i].compare("pinned_use_c"
-                          "uda_host_register") == 0) {
+        config_item_view == "pinned_use_hip_host_register" ||
+        config_item_view ==
+            "pinned_use_c"
+            "uda_host_register") {
       i = parsePinnedUseCudaHostRegister(config, i);
       used_native_specific_option = true;
-    } else if (config[i].compare("pinned_num_register_threads") == 0) {
+    } else if (config_item_view == "pinned_num_register_threads") {
       i = parsePinnedNumRegisterThreads(config, i);
       used_native_specific_option = true;
+    } else if (config_item_view == "pinned_use_background_threads") {
+      i = parsePinnedUseBackgroundThreads(config, i);
+      used_native_specific_option = true;
     } else {
-      TORCH_CHECK(false, "Unrecognized CachingAllocator option: ", config[i]);
+      TORCH_CHECK(
+          false, "Unrecognized CachingAllocator option: ", config_item_view);
     }
 
     if (i + 1 < config.size()) {
@@ -347,11 +423,25 @@ size_t CUDAAllocatorConfig::parsePinnedNumRegisterThreads(
   return i;
 }
 
+size_t CUDAAllocatorConfig::parsePinnedUseBackgroundThreads(
+    const std::vector<std::string>& config,
+    size_t i) {
+  consumeToken(config, ++i, ':');
+  if (++i < config.size()) {
+    TORCH_CHECK(
+        (config[i] == "True" || config[i] == "False"),
+        "Expected a single True/False argument for pinned_use_background_threads");
+    m_pinned_use_background_threads = (config[i] == "True");
+  } else {
+    TORCH_CHECK(
+        false, "Error, expecting pinned_use_background_threads value", "");
+  }
+  return i;
+}
+
 // General caching allocator utilities
 void setAllocatorSettings(const std::string& env) {
   CUDACachingAllocator::CUDAAllocatorConfig::instance().parseArgs(env.c_str());
 }
 
-} // namespace CUDACachingAllocator
-} // namespace cuda
-} // namespace c10
+} // namespace c10::cuda::CUDACachingAllocator

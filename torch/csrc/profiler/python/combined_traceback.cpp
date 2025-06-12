@@ -2,8 +2,6 @@
 #include <torch/csrc/python_headers.h>
 #include <torch/csrc/utils/pybind.h>
 #include <torch/csrc/utils/pythoncapi_compat.h>
-#include <iostream>
-
 namespace py = pybind11;
 
 namespace torch {
@@ -25,6 +23,9 @@ static std::mutex to_free_frames_mutex;
 static std::vector<CapturedTraceback::PyFrame> to_free_frames;
 struct PythonTraceback : public CapturedTraceback::Python {
   std::vector<CapturedTraceback::PyFrame> gather() override {
+    if (!Py_IsInitialized()) {
+      return {};
+    }
     std::vector<CapturedTraceback::PyFrame> frames;
     py::gil_scoped_acquire acquire;
     {
@@ -113,6 +114,49 @@ struct PythonTraceback : public CapturedTraceback::Python {
 };
 
 } // namespace
+
+std::vector<nlohmann::json> json_symbolize(
+    std::vector<CapturedTraceback*>& to_symbolize) {
+  std::unordered_map<CapturedTraceback*, uint64_t> cached_frames;
+  std::vector<CapturedTraceback*> unique_frames;
+  for (const auto& sc : to_symbolize) {
+    auto it = cached_frames.find(sc);
+    if (it == cached_frames.end()) {
+      cached_frames.try_emplace(sc, unique_frames.size());
+      unique_frames.push_back(sc);
+    }
+  }
+  auto s = symbolize(unique_frames);
+
+  std::string line_s = "line";
+  std::string name_s = "name";
+  std::string filename_s = "filename";
+  std::vector<nlohmann::json> all_frames;
+
+  for (const auto& f : s.all_frames) {
+    nlohmann::json d;
+    d[name_s] = f.funcname;
+    d[filename_s] = f.filename;
+    d[line_s] = f.lineno;
+    all_frames.emplace_back(std::move(d));
+  }
+
+  std::vector<nlohmann::json> py_unique_frames;
+  for (const auto& t : s.tracebacks) {
+    nlohmann::json l;
+    for (const auto& e : t) {
+      l.emplace_back(all_frames.at(e));
+    }
+    py_unique_frames.push_back(std::move(l));
+  }
+
+  std::vector<nlohmann::json> result;
+  result.reserve(to_symbolize.size());
+  for (const auto& sc : to_symbolize) {
+    result.push_back(py_unique_frames.at(cached_frames.at(sc)));
+  }
+  return result;
+}
 
 std::vector<py::object> py_symbolize(
     std::vector<CapturedTraceback*>& to_symbolize) {

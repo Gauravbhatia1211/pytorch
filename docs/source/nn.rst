@@ -22,6 +22,7 @@ These are the basic building blocks for graphs:
     :nosignatures:
     :template: classtemplate.rst
 
+    ~parameter.Buffer
     ~parameter.Parameter
     ~parameter.UninitializedParameter
     ~parameter.UninitializedBuffer
@@ -103,6 +104,7 @@ Pooling layers
     nn.FractionalMaxPool3d
     nn.LPPool1d
     nn.LPPool2d
+    nn.LPPool3d
     nn.AdaptiveMaxPool1d
     nn.AdaptiveMaxPool2d
     nn.AdaptiveMaxPool3d
@@ -130,6 +132,9 @@ Padding Layers
     nn.ConstantPad1d
     nn.ConstantPad2d
     nn.ConstantPad3d
+    nn.CircularPad1d
+    nn.CircularPad2d
+    nn.CircularPad3d
 
 Non-linear Activations (weighted sum, nonlinearity)
 ---------------------------------------------------
@@ -203,6 +208,7 @@ Normalization Layers
     nn.LazyInstanceNorm3d
     nn.LayerNorm
     nn.LocalResponseNorm
+    nn.RMSNorm
 
 Recurrent Layers
 ----------------
@@ -367,6 +373,8 @@ Utility functions to clip parameter gradients.
     clip_grad_norm_
     clip_grad_norm
     clip_grad_value_
+    get_total_norm
+    clip_grads_with_norm_
 
 Utility functions to flatten and unflatten Module parameters to and from a single vector.
 
@@ -395,6 +403,7 @@ Utility functions to convert Module parameter memory formats.
     :nosignatures:
 
     convert_conv2d_weight_memory_format
+    convert_conv3d_weight_memory_format
 
 Utility functions to apply and remove weight normalization from Module parameters.
 
@@ -447,6 +456,7 @@ in :func:`torch.nn.utils.parameterize.register_parametrization`.
     :nosignatures:
 
     parametrizations.orthogonal
+    parametrizations.weight_norm
     parametrizations.spectral_norm
 
 Utility functions to parametrize Tensors on existing Modules.
@@ -521,6 +531,18 @@ Lazy Modules Initialization
 
     nn.modules.lazy.LazyModuleMixin
 
+Aliases
+_______
+
+The following are aliases to their counterparts in ``torch.nn``:
+
+.. currentmodule:: torch
+.. autosummary::
+    :toctree: generated
+    :nosignatures:
+    :template: classtemplate.rst
+
+    nn.modules.normalization.RMSNorm
 
 .. This module needs to be documented. Adding here in the meantime
 .. for tracking purposes
@@ -557,7 +579,6 @@ Lazy Modules Initialization
 .. py:module:: torch.nn.modules.upsampling
 .. py:module:: torch.nn.modules.utils
 .. py:module:: torch.nn.parallel.comm
-.. py:module:: torch.nn.parallel.data_parallel
 .. py:module:: torch.nn.parallel.distributed
 .. py:module:: torch.nn.parallel.parallel_apply
 .. py:module:: torch.nn.parallel.replicate
@@ -572,5 +593,3 @@ Lazy Modules Initialization
 .. py:module:: torch.nn.utils.parametrize
 .. py:module:: torch.nn.utils.prune
 .. py:module:: torch.nn.utils.rnn
-.. py:module:: torch.nn.utils.spectral_norm
-.. py:module:: torch.nn.utils.weight_norm

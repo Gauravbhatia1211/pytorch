@@ -3,8 +3,7 @@
 #include <functional>
 #include <memory>
 
-namespace torch {
-namespace autograd {
+namespace torch::autograd {
 
 using hooks_list =
     std::vector<std::function<at::TensorBase(const at::TensorBase&)>>;
@@ -23,9 +22,11 @@ struct CppFunctionSingleTensorPreHook : public FunctionPreHook {
       size_t value_idx);
   variable_list operator()(const variable_list& values) override;
 
+  void compiled_args(
+      torch::dynamo::autograd::CompiledNodeArgs& args) const override;
+
   std::function<at::TensorBase(const at::TensorBase&)> hook_;
   size_t value_idx_;
 };
 
-} // namespace autograd
-} // namespace torch
+} // namespace torch::autograd

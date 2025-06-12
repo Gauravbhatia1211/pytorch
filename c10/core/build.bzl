@@ -62,7 +62,6 @@ def define_targets(rules):
             exclude = [
                 "CPUAllocator.cpp",
                 "impl/alloc_cpu.cpp",
-                "impl/cow/*.cpp",
             ],
         ),
         hdrs = rules.glob(
@@ -73,7 +72,6 @@ def define_targets(rules):
             exclude = [
                 "CPUAllocator.h",
                 "impl/alloc_cpu.h",
-                "impl/cow/*.h",
             ],
         ),
         linkstatic = True,
@@ -82,6 +80,7 @@ def define_targets(rules):
         deps = [
             ":ScalarType",
             "//third_party/cpuinfo",
+            "//:torch_standalone_headers",
             "//c10/macros",
             "//c10/util:TypeCast",
             "//c10/util:base",
@@ -93,19 +92,19 @@ def define_targets(rules):
     )
 
     rules.cc_library(
-        name = "impl_cow",
-        srcs = rules.glob([
-            "impl/cow/*.cpp",
-        ]),
-        hdrs = rules.glob([
-            "impl/cow/*.h",
-        ]),
-        deps = [
-            ":base",
-            ":CPUAllocator",
-        ],
-        visibility = ["//c10/test:__pkg__"],
-
+        name = "base_headers",
+        srcs = [],
+        hdrs = rules.glob(
+            [
+                "*.h",
+                "impl/*.h",
+            ],
+            exclude = [
+                "CPUAllocator.h",
+                "impl/alloc_cpu.h",
+            ],
+        ),
+        visibility = ["//visibility:public"],
     )
 
     rules.filegroup(
@@ -119,5 +118,5 @@ def define_targets(rules):
                 "alignment.h",
             ],
         ),
-        visibility = ["//c10:__pkg__"],
+        visibility = ["//visibility:public"],
     )

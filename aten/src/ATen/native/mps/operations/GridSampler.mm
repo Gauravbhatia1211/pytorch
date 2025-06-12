@@ -71,8 +71,8 @@ static void grid_sampler_2d_mps_impl(Tensor& output,
   };
 
   @autoreleasepool {
-    string key = "grid_sampler_2d_mps" + getTensorsStringKey({input, grid}) + ":" + std::to_string(interpolation_mode) +
-        ":" + std::to_string(padding_mode) + ":" + std::to_string(align_corners);
+    std::string key = "grid_sampler_2d_mps" + getTensorsStringKey({input, grid}) + ":" +
+        std::to_string(interpolation_mode) + ":" + std::to_string(padding_mode) + ":" + std::to_string(align_corners);
 
     auto cachedGraph = LookUpOrCreateCachedGraph<CachedGraph>(key, [&](auto mpsGraph, auto newCachedGraph) {
       MPSGraphTensor* inputTensor = mpsGraphRankedPlaceHolder(mpsGraph, input);
@@ -116,14 +116,8 @@ static void grid_sampler_2d_mps_impl(Tensor& output,
     Placeholder gridPlaceholder = Placeholder(cachedGraph->gridTensor_, grid);
     Placeholder outputPlaceholder = Placeholder(cachedGraph->outputTensor_, output);
 
-    NSDictionary<MPSGraphTensor*, MPSGraphTensorData*>* feeds = @{
-      inputPlaceholder.getMPSGraphTensor() : inputPlaceholder.getMPSGraphTensorData(),
-      gridPlaceholder.getMPSGraphTensor() : gridPlaceholder.getMPSGraphTensorData()
-    };
-    NSDictionary<MPSGraphTensor*, MPSGraphTensorData*>* results =
-        @{outputPlaceholder.getMPSGraphTensor() : outputPlaceholder.getMPSGraphTensorData()};
-
-    runMPSGraph(stream, cachedGraph->graph(), feeds, results);
+    auto feeds = dictionaryFromPlaceholders(inputPlaceholder, gridPlaceholder);
+    runMPSGraph(stream, cachedGraph->graph(), feeds, outputPlaceholder);
   }
 }
 } // namespace mps

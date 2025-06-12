@@ -122,6 +122,15 @@ Probability distributions - torch.distributions
     :undoc-members:
     :show-inheritance:
 
+:hidden:`GeneralizedPareto`
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. currentmodule:: torch.distributions.generalized_pareto
+.. autoclass:: GeneralizedPareto
+    :members:
+    :undoc-members:
+    :show-inheritance:
+
 :hidden:`Geometric`
 ~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -163,6 +172,15 @@ Probability distributions - torch.distributions
 
 .. currentmodule:: torch.distributions.independent
 .. autoclass:: Independent
+    :members:
+    :undoc-members:
+    :show-inheritance:
+
+:hidden:`InverseGamma`
+~~~~~~~~~~~~~~~~~~~~~~
+
+.. currentmodule:: torch.distributions.inverse_gamma
+.. autoclass:: InverseGamma
     :members:
     :undoc-members:
     :show-inheritance:
@@ -410,11 +428,13 @@ Probability distributions - torch.distributions
 .. py:module:: torch.distributions.exponential
 .. py:module:: torch.distributions.fishersnedecor
 .. py:module:: torch.distributions.gamma
+.. py:module:: torch.distributions.generalized_pareto
 .. py:module:: torch.distributions.geometric
 .. py:module:: torch.distributions.gumbel
 .. py:module:: torch.distributions.half_cauchy
 .. py:module:: torch.distributions.half_normal
 .. py:module:: torch.distributions.independent
+.. py:module:: torch.distributions.inverse_gamma
 .. py:module:: torch.distributions.kumaraswamy
 .. py:module:: torch.distributions.laplace
 .. py:module:: torch.distributions.lkj_cholesky

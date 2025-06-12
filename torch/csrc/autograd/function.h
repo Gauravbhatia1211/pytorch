@@ -24,8 +24,7 @@
 #include <utility>
 #include <vector>
 
-namespace torch {
-namespace autograd {
+namespace torch::autograd {
 
 struct Edge;
 struct FunctionPostHook;
@@ -35,8 +34,12 @@ using tensor_list = std::vector<at::Tensor>;
 using variable_list = std::vector<Variable>;
 using edge_list = std::vector<Edge>;
 using saved_variable_list = std::vector<SavedVariable>;
+using ivalue_list = std::vector<c10::IValue>;
+using functional_apply_t = std::function<
+    variable_list(const variable_list&, const std::vector<c10::IValue>&)>;
 using IndexRange = std::pair<size_t, size_t>;
 using torch::dynamo::autograd::CompiledNodeArgs;
+using torch::dynamo::autograd::PackedArgs;
 using torch::dynamo::autograd::SwapSavedVariables;
 
 // Custom deleter to prevent stack overflows.
@@ -64,7 +67,7 @@ TORCH_API std::shared_ptr<Node> get_current_node();
 // or more input `Variable`s and producing zero or more output `Variable`s. All
 // functions in PyTorch's autograd machinery derive from this class and
 // override its `apply` method. Instances of such subclasses will then be
-// invokeable via the call operator.
+// invokable via the call operator.
 //
 //                    Nodes in the Autograd Graph
 //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -240,13 +243,34 @@ struct TORCH_API Node : std::enable_shared_from_this<Node> {
    * elements are on different devices (across multiple GPUs, for example)
    * they may have different streams.
    */
-  c10::optional<c10::Stream> stream(const c10::DeviceType device_type) {
+  std::optional<c10::Stream> stream() {
+    auto opt_device_type = at::getAccelerator();
+    if (!opt_device_type.has_value()) {
+      return std::nullopt;
+    }
     for (const auto& metadata : input_metadata_) {
-      if (metadata.device().type() == device_type)
+      if (metadata.device().type() == opt_device_type.value())
         return metadata.stream();
     }
 
-    return c10::nullopt;
+    return std::nullopt;
+  }
+
+  // Used by the engine to determine what device thread to run on
+  at::Device device() {
+    // Since we pick the first non-CPU tensor, this won't work with
+    // mixed device-type operations (e.g., an op that is both CUDA
+    // and XLA).  This is *incredibly* unlikely, so we don't worry
+    // about it.
+    for (const auto& metadata : input_metadata_) {
+      auto device = metadata.device();
+      if (device.type() != at::kCPU) {
+        return device;
+      }
+    }
+    // Only report to the CPU thread if there really were no tensors
+    // from other devices.
+    return at::kCPU;
   }
 
   void clear_input_metadata() {
@@ -326,6 +350,10 @@ struct TORCH_API Node : std::enable_shared_from_this<Node> {
   ///    in a new thread
   uint64_t sequence_nr() const noexcept {
     return sequence_nr_;
+  }
+
+  void set_sequence_nr(uint64_t sequence_nr) {
+    sequence_nr_ = sequence_nr;
   }
 
   // NOTE [ Topological Number ]
@@ -517,8 +545,8 @@ struct TORCH_API Node : std::enable_shared_from_this<Node> {
     return tensor_pre_hooks_;
   }
 
-  virtual std::unique_ptr<PostAccumulateGradHook>&
-  tensor_post_acc_grad_hooks() noexcept {
+  virtual std::unique_ptr<PostAccumulateGradHook>& tensor_post_acc_grad_hooks()
+      const noexcept {
     static std::unique_ptr<PostAccumulateGradHook> empty = nullptr;
     return empty;
   }
@@ -565,7 +593,7 @@ struct TORCH_API Node : std::enable_shared_from_this<Node> {
   //   2) Collect node information for specialization and caching
   // Implementations in subclasses should call args.collect() with all node
   // attrs. These functions are only called durring backward.
-  virtual void compiled_args(CompiledNodeArgs& args) {
+  virtual void compiled_args(CompiledNodeArgs& args) const {
     throw std::runtime_error(
         std::string("compiled_args not implemented: ") + name());
   }
@@ -580,6 +608,12 @@ struct TORCH_API Node : std::enable_shared_from_this<Node> {
         std::string("apply_with_saved not implemented: ") + name());
   }
 
+  // If this node is the AOTBackward node produced by torch.compile.
+  // Compiled Autograd special-cases on this information.
+  virtual bool is_aot_backward() const {
+    return false;
+  }
+
  protected:
   /// Performs the `Node`'s actual operation.
   virtual variable_list apply(variable_list&& inputs) = 0;
@@ -590,7 +624,7 @@ struct TORCH_API Node : std::enable_shared_from_this<Node> {
   // Sequence number used to correlate backward nodes with forward ops in the
   // profiler and provide determinism in the engine.
   // NOLINTNEXTLINE(cppcoreguidelines-avoid-const-or-ref-data-members)
-  const uint64_t sequence_nr_;
+  uint64_t sequence_nr_;
 
   // See NOTE [ Topological Number ]
   uint64_t topological_nr_ = 0;
@@ -696,7 +730,7 @@ struct MakeNextFunctionList : IterArgs<MakeNextFunctionList> {
   void operator()(const Variable* variable) {
     operator()(*variable);
   }
-  void operator()(const c10::optional<Variable>& variable) {
+  void operator()(const std::optional<Variable>& variable) {
     if (variable.has_value()) {
       operator()(*variable);
     } else {
@@ -742,18 +776,15 @@ edge_list collect_next_edges(Variables&&... variables) {
 }
 
 struct TypeAndSize {
-  TypeAndSize() : options(at::TensorOptions()) {}
+  TypeAndSize() = default;
   /* implicit */
   TypeAndSize(const at::Tensor& t)
       : sym_sizes(t.sym_sizes().vec()), options(t.options()) {}
 
-  at::Tensor zeros() {
-    return at::zeros_symint(sym_sizes, options);
-  }
+  at::Tensor zeros();
 
   std::vector<c10::SymInt> sym_sizes;
   at::TensorOptions options;
 };
 
-} // namespace autograd
-} // namespace torch
+} // namespace torch::autograd

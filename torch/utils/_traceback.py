@@ -1,5 +1,6 @@
+# mypy: allow-untyped-defs
 from types import TracebackType
-from typing import List, Optional
+from typing import Optional
 import tempfile
 import traceback
 import contextlib
@@ -128,13 +129,10 @@ def report_compile_source_on_error():
             tb.tb_next = tb_next
             tb_next = tb
 
-        raise exc.with_traceback(tb_next)  # noqa: TRY200
+        raise exc.with_traceback(tb_next)  # noqa: B904
 
 def shorten_filename(fn, *, base=None):
-    """
-    Shorten a source filepath, under the assumption that anything under torch/
-    directory is "obvious" and doesn't need to be shown to user.
-    """
+    """Shorten a source filepath, with the assumption that torch/ subdirectories don't need to be shown to user."""
     if base is None:
         base = os.path.dirname(os.path.dirname(__file__))
     # Truncate torch/foo.py to foo.py
@@ -147,8 +145,9 @@ def shorten_filename(fn, *, base=None):
 
 def format_frame(frame, *, base=None, line=False):
     """
-    Format a FrameSummary in a short way, without printing full absolute path
-    or code.  The idea is the result fits on a single line.
+    Format a FrameSummary in a short way, without printing full absolute path or code.
+
+    The idea is the result fits on a single line.
     """
     extra_line = ""
     if line:
@@ -156,9 +155,7 @@ def format_frame(frame, *, base=None, line=False):
     return f"{extra_line}{shorten_filename(frame.filename, base=base)}:{frame.lineno} in {frame.name}"
 
 def format_traceback_short(tb):
-    """
-    Format a TracebackType in a short way, printing only the inner-most frame.
-    """
+    """Format a TracebackType in a short way, printing only the inner-most frame."""
     return format_frame(traceback.extract_tb(tb)[-1])
 
 class CapturedTraceback:
@@ -231,7 +228,7 @@ class CapturedTraceback:
         import torch._C._profiler
 
         # Directly populate tracebacks that already have cached summaries
-        rs: List[Optional[List[str]]] = []
+        rs: list[Optional[list[str]]] = []
         delayed_idxs = []
         for i, tb in enumerate(tbs):
             if tb.tb is None:
@@ -240,8 +237,8 @@ class CapturedTraceback:
                 rs.append(None)
                 delayed_idxs.append(i)
 
-        stbs = torch._C._profiler.symbolize_tracebacks([tbs[i].tb for i in delayed_idxs])
-        for i, stb in zip(delayed_idxs, stbs):
+        torch._C._profiler.symbolize_tracebacks([tbs[i].tb for i in delayed_idxs])
+        for i in delayed_idxs:
             rs[i] = traceback.format_list(tbs[i].summary())
 
         return rs
